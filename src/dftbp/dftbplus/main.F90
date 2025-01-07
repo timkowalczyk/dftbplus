@@ -22,7 +22,8 @@ module dftbp_dftbplus_main
   use dftbp_dftb_blockpothelper, only : appendBlockReduced
   use dftbp_dftb_boundarycond, only : TBoundaryConditions
   use dftbp_dftb_densitymatrix, only : TDensityMatrix, transformDualSpaceToBvKRealSpace
-  use dftbp_dftb_determinants, only : TDftbDeterminants, TDftbDeterminants_init, determinants
+  use dftbp_dftb_determinants, only : TDftbDeterminants, TDftbDeterminants_init, determinants,&
+      & tiTDM, tiTraDip
   use dftbp_dftb_dftbplusu, only : TDftbU
   use dftbp_dftb_dispersions, only : TDispersionIface
   use dftbp_dftb_energytypes, only : TEnergies
@@ -123,7 +124,7 @@ module dftbp_dftbplus_main
   use dftbp_dftb_sparse2dense, only : packRhoRealBlacs, packRhoCplxBlacs, packRhoPauliBlacs,&
       & packRhoHelicalRealBlacs, packRhoHelicalCplxBlacs, packERhoPauliBlacs, unpackHSRealBlacs,&
       & unpackHSCplxBlacs, unpackHPauliBlacs, unpackSPauliBlacs, unpackHSHelicalRealBlacs,&
-      & unpackHSHelicalCplxBlacs
+      & unpackHSHelicalCplxBlacs, tiTDM, tiTraDip
   use dftbp_dftbplus_eigenvects, only : diagDenseMtxBlacs
   use dftbp_extlibs_mpifx, only : MPI_SUM, MPI_MAX, mpifx_allreduceip, mpifx_bcast
   use dftbp_extlibs_scalapackfx, only : pblasfx_phemm, pblasfx_psymm, pblasfx_ptran,&
@@ -247,8 +248,11 @@ contains
       end do lpDets
 
       call this%deltaDftb%postProcessDets(this%dftbEnergy, this%qOutput, this%qDets,&
-          & this%qBlockOut, this%qBlockDets, this%dipoleMoment, this%totalStress,&
-          & this%tripletStress, this%mixedStress, this%derivs, this%tripletderivs, this%mixedderivs)
+          & this%qBlockOut, this%qBlockDets, this%dipoleMoment, this%transitionDipoleMoment,&
+          & this%gfilling, this%mfilling, this%totalStress, this%tripletStress, this%mixedStress,&
+          & this%derivs, this%tripletderivs, this%mixedderivs)
+          !& this%tripletStress, this%mixedStress, this%derivs, this%tripletderivs, this%mixedderivs,
+          !& this%gfilling, this%mfilling)
 
       if (this%tWriteDetailedOut .and. this%deltaDftb%nDeterminant() > 1) then
         call writeDetailedOut2Dets(this%fdDetailedOut, userOut, tAppendDetailedOut,&
@@ -372,8 +376,8 @@ contains
       if (this%tWriteDetailedOut) then
         call writeDetailedOut7(this%fdDetailedOut%unit,&
             & this%isGeoOpt .or. allocated(this%geoOpt), tGeomEnd, this%tMd, this%tDerivs,&
-            & this%eField, this%dipoleMoment, this%deltaDftb, this%eFieldScaling,&
-            & this%dipoleMessage)
+            & this%eField, this%dipoleMoment, this%deltaDftb, this%transitionDipoleMoment,&
+            & this%eFieldScaling, this%dipoleMessage)
       end if
 
       call writeFinalDriverStatus(this%isGeoOpt .or. allocated(this%geoOpt), tGeomEnd, this%tMd,&
@@ -1234,6 +1238,7 @@ contains
       end if
     end if
 
+    write(*,*) "TDMWRITE: Printing SCC Header"
     if (.not.this%tRestartNoSC) then
       call initSccLoop(this%tSccCalc, this%xlbomdIntegrator, this%minSccIter, this%maxSccIter,&
           & this%sccTol, tConverged, this%tNegf, this%reks)
@@ -1366,6 +1371,7 @@ contains
       ! Standard spin free or unrestricted DFTB
 
       lpSCC: do iSccIter = 1, this%maxSccIter
+        write(*,*) 'TDMWRITE: Entering lpSCC'
 
         if (allocated(this%elecConstraint)) then
           nConstrIter = this%elecConstraint%getMaxIter()
@@ -1413,7 +1419,8 @@ contains
               & this%hybridXc, this%eigen, this%filling, this%rhoPrim, this%xi, this%orbitalL,&
               & this%HSqrReal, this%SSqrReal, this%eigvecsReal, this%iRhoPrim, this%HSqrCplx,&
               & this%SSqrCplx, this%eigvecsCplx, this%rhoSqrReal, this%densityMatrix,&
-              & this%nNeighbourCam, this%nNeighbourCamSym, this%deltaDftb, errStatus)
+              & this%nNeighbourCam, this%nNeighbourCamSym, this%deltaDftb, this%gfilling,&
+              & this%mfilling, this%tiMatG, this%tiMatE, this%tiMatPT, errStatus)
           if (errStatus%hasError()) call error(errStatus%message)
 
           if (this%tWriteBandDat) then
@@ -1569,6 +1576,13 @@ contains
     end if
 
     call env%globalTimer%stopTimer(globalTimers%scc)
+
+    if (this%deltaDftb%isTDM) then
+      call tiTraDip(this%tiMatG, this%tiMatE, this%tiMatPT, this%neighbourlist, this%nNeighbourSK,&
+              & this%orb, this%denseDesc, this%iSparseStart, this%img2CentCell, this%rhoPrim,&
+              & this%ints%overlap, this%tiTraCharges, this%transitionDipoleMoment, this%q0,&
+              & this%coord0, this%iAtInCentralRegion, this%gfilling, this%mfilling, env)
+    end if
 
     if (allocated(this%scc)) then
       call this%scc%finishSccLoop(env)
@@ -2677,7 +2691,8 @@ contains
       & tRealHS, tSpinSharedEf, tSpinOrbit, tDualSpinOrbit, tFillKSep, tFixEf, tMulliken,&
       & iDistribFn, tempElec, nEl, parallelKS, Ef, mu, energy, hybridXc, eigen, filling, rhoPrim,&
       & xi, orbitalL, HSqrReal, SSqrReal, eigvecsReal, iRhoPrim, HSqrCplx, SSqrCplx, eigvecsCplx,&
-      & rhoSqrReal, densityMatrix, nNeighbourCam, nNeighbourCamSym, deltaDftb, errStatus)
+      & rhoSqrReal, densityMatrix, nNeighbourCam, nNeighbourCamSym, deltaDftb, gfilling,&
+      & mfilling, tiMatG, tiMatE, tiMatPT, errStatus)
     use dftbp_elecsolvers_dmsolvertypes, only : densityMatrixTypes
 
     !> Environment settings
@@ -2845,6 +2860,21 @@ contains
     !> Determinant derived type
     type(TDftbDeterminants), intent(inout) :: deltaDftb
 
+    !> Fillings for ground state (TI-DFTB transition dipoles)
+    real(dp), intent(inout) :: gfilling(:,:,:)
+
+    !> Fillings for mixed-spin state (TI-DFTB transition dipoles)
+    real(dp), intent(inout) :: mfilling(:,:,:)
+
+    !> TI-DFTB TDM: ground-state MO eigenvectors
+    real(dp), intent(inout), allocatable :: tiMatG(:,:,:)
+
+    !> TI-DFTB TDM: excited-state MO eigenvectors
+    real(dp), intent(inout), allocatable :: tiMatE(:,:,:)
+
+    !> TI-DFTB TDM: Transition density matrix
+    real(dp), intent(inout), allocatable :: tiMatPT(:,:)
+
     !> Status of operation
     type(TStatus), intent(out) :: errStatus
 
@@ -2867,7 +2897,7 @@ contains
           & iDistribFn, tempElec, nEl, parallelKS, Ef, energy, hybridXc, eigen, filling, rhoPrim,&
           & xi, orbitalL, HSqrReal, SSqrReal, eigvecsReal, iRhoPrim, HSqrCplx, SSqrCplx,&
           & eigvecsCplx, rhoSqrReal, densityMatrix, nNeighbourCam, nNeighbourCamSym, deltaDftb,&
-          & errStatus)
+          & gfilling, mfilling, tiMatG, tiMatE, tiMatPT, errStatus)
       @:PROPAGATE_ERROR(errStatus)
 
     case(densityMatrixTypes%elecSolverProvided)
@@ -2908,7 +2938,8 @@ contains
       & tRealHS, tSpinSharedEf, tSpinOrbit, tDualSpinOrbit, tFillKSep, tFixEf, tMulliken,&
       & iDistribFn, tempElec, nEl, parallelKS, Ef, energy, hybridXc, eigen, filling, rhoPrim, xi,&
       & orbitalL, HSqrReal, SSqrReal, eigvecsReal, iRhoPrim, HSqrCplx, SSqrCplx, eigvecsCplx,&
-      & rhoSqrReal, densityMatrix, nNeighbourCam, nNeighbourCamSym, deltaDftb, errStatus)
+      & rhoSqrReal, densityMatrix, nNeighbourCam, nNeighbourCamSym, deltaDftb, gfilling,&
+      & mfilling, tiMatG, tiMatE, tiMatPT, errStatus)
 
     !> Environment settings
     type(TEnvironment), intent(inout) :: env
@@ -3066,6 +3097,21 @@ contains
     !> Determinant derived type
     type(TDftbDeterminants), intent(inout) :: deltaDftb
 
+    !> Fillings for ground state (TI-DFTB transition dipoles)
+    real(dp), intent(inout) :: gfilling(:,:,:)
+
+    !> Fillings for mixed-spin state (TI-DFTB transition dipoles)
+    real(dp), intent(inout) :: mfilling(:,:,:)
+
+    !> TI-DFTB TDM: ground-state MO eigenvectors
+    real(dp), intent(inout), allocatable :: tiMatG(:,:,:)
+
+    !> TI-DFTB TDM: excited-state MO eigenvectors
+    real(dp), intent(inout), allocatable :: tiMatE(:,:,:)
+
+    !> TI-DFTB TDM: Transition density matrix
+    real(dp), intent(inout), allocatable :: tiMatPT(:,:)
+
     !> Status of operation
     type(TStatus), intent(out) :: errStatus
 
@@ -3079,7 +3125,7 @@ contains
             & symNeighbourList, nNeighbourSK, iSparseStart, img2CentCell, orb, tPeriodic, tHelical,&
             & coord, electronicSolver, parallelKS, hybridXc, densityMatrix%deltaRhoIn,&
             & nNeighbourCam, nNeighbourCamSym, HSqrReal, SSqrReal, eigVecsReal, eigen(:,1,:),&
-            & errStatus)
+            & deltaDftb, tiMatG, tiMatE, tiMatPT, errStatus)
         @:PROPAGATE_ERROR(errStatus)
       else
         call buildAndDiagDenseCplxHam(env, denseDesc, ints, kPoint, kWeight, neighbourList,&
@@ -3098,7 +3144,8 @@ contains
     call env%globalTimer%stopTimer(globalTimers%diagonalization)
 
     call getFillingsAndBandEnergies(eigen, nEl, nSpin, tempElec, kWeight, tSpinSharedEf,&
-        & tFillKSep, tFixEf, iDistribFn, Ef, filling, energy%Eband, energy%TS, energy%E0, deltaDftb)
+        & tFillKSep, tFixEf, iDistribFn, Ef, filling, energy%Eband, energy%TS, energy%E0, deltaDftb,&
+        & gfilling, mfilling)
 
     call env%globalTimer%startTimer(globalTimers%densityMatrix)
     if (nSpin /= 4) then
@@ -3134,7 +3181,8 @@ contains
   subroutine buildAndDiagDenseRealHam(env, denseDesc, ints, species, neighbourList,&
       & symNeighbourList, nNeighbourSK, iSparseStart, img2CentCell, orb, tPeriodic, tHelical,&
       & coord, electronicSolver, parallelKS, hybridXc, deltaRhoIn, nNeighbourCam,&
-      & nNeighbourCamSym, HSqrReal, SSqrReal, eigvecsReal, eigen, errStatus)
+      & nNeighbourCamSym, HSqrReal, SSqrReal, eigvecsReal, eigen, deltaDftb, &
+      & tiMatG, tiMatE, tiMatPT, errStatus)
 
     !> Environment settings
     type(TEnvironment), intent(inout) :: env
@@ -3205,11 +3253,24 @@ contains
     !> Eigenvalues
     real(dp), intent(out) :: eigen(:,:)
 
+    !> Determinant derived type
+    type(TDftbDeterminants), intent(inout) :: deltaDftb
+
+    !> TI-DFTB TDM: ground-state MO eigenvectors
+    real(dp), intent(inout), allocatable :: tiMatG(:,:,:)
+
+    !> TI-DFTB TDM: excited-state MO eigenvectors
+    real(dp), intent(inout), allocatable :: tiMatE(:,:,:)
+
+    !> TI-DFTB TDM: Transition density matrix
+    real(dp), intent(inout), allocatable :: tiMatPT(:,:)
+
     !> Status of operation
     type(TStatus), intent(inout) :: errStatus
 
     integer :: iKS, iSpin
 
+    write(*,*) 'TDMWRITE: Entering BuildAndDiagDenseRealHam'
     eigen(:,:) = 0.0_dp
 
     do iKS = 1, parallelKS%nLocalKS
@@ -3276,6 +3337,21 @@ contains
     ! Distribute all eigenvalues to all nodes via global summation
     call mpifx_allreduceip(env%mpi%interGroupComm, eigen, MPI_SUM)
   #:endif
+
+ 
+    ! Store Hamiltonians for TDM calculation
+    write(*,*) 'TDMWRITE: Entering tiMat assignments'
+    if (deltaDftb%isTDM) then
+      if(deltaDftb%whichDeterminant(deltaDftb%iDeterminant) == determinants%ground) then
+        tiMatG(:,:,iKS) = 0.0_dp
+        tiMatG(:,:,iKS) = HSqrReal
+      end if
+      if(deltaDftb%whichDeterminant(deltaDftb%iDeterminant) == determinants%mixed) then
+        tiMatE(:,:,iKS) = 0.0_dp
+        tiMatE(:,:,iKS) = HSqrReal
+      end if
+    end if
+    write(*,*) 'TDMWRITE: Exiting tiMat assignments'
 
   end subroutine buildAndDiagDenseRealHam
 
@@ -4101,7 +4177,8 @@ contains
 
   !> Calculates electron fillings and resulting band energy terms.
   subroutine getFillingsAndBandEnergies(eigvals, nElectrons, nSpinBlocks, tempElec, kWeights,&
-      & tSpinSharedEf, tFillKSep, tFixEf, iDistribFn, Ef, fillings, Eband, TS, E0, deltaDftb)
+      & tSpinSharedEf, tFillKSep, tFixEf, iDistribFn, Ef, fillings, Eband, TS, E0, deltaDftb,&
+      & gfilling, mfilling)
 
     !> Eigenvalue of each level, kpoint and spin channel
     real(dp), intent(inout) :: eigvals(:,:,:)
@@ -4148,6 +4225,12 @@ contains
 
     !> Determinant derived type
     type(TDftbDeterminants), intent(inout) :: deltaDftb
+
+    !> Fillings for ground state (TI-DFTB transition dipoles)
+    real(dp), intent(inout) :: gfilling(:,:,:)
+
+    !> Fillings for mixed-spin state (TI-DFTB transition dipoles)
+    real(dp), intent(inout) :: mfilling(:,:,:)
 
     real(dp) :: EbandTmp(2), TSTmp(2), E0Tmp(2), EfTmp(2), nElecFill(2), kWeightTmp(2)
     integer :: nSpinHams, nKPoints, nLevels, iS, iK
@@ -4203,6 +4286,16 @@ contains
       E0(:) = 2.0_dp * E0
       TS(:) = 2.0_dp * TS
       fillings(:,:,:) = 2.0_dp * fillings
+    end if
+
+    ! Store fillings for TDM calculation
+    if (deltaDftb%isTDM) then
+      if(deltaDftb%whichDeterminant(deltaDftb%iDeterminant) == determinants%ground) then
+        gfilling = fillings
+      end if
+      if(deltaDftb%whichDeterminant(deltaDftb%iDeterminant) == determinants%mixed) then
+        mfilling = fillings
+      end if
     end if
 
   end subroutine getFillingsAndBandEnergies
