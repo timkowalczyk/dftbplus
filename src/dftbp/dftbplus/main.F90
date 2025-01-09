@@ -23,7 +23,7 @@ module dftbp_dftbplus_main
   use dftbp_dftb_boundarycond, only : TBoundaryConditions
   use dftbp_dftb_densitymatrix, only : TDensityMatrix, transformDualSpaceToBvKRealSpace
   use dftbp_dftb_determinants, only : TDftbDeterminants, TDftbDeterminants_init, determinants,&
-      & tiTDM, tiTraDip
+      & tiTraDip
   use dftbp_dftb_dftbplusu, only : TDftbU
   use dftbp_dftb_dispersions, only : TDispersionIface
   use dftbp_dftb_energytypes, only : TEnergies
@@ -124,7 +124,7 @@ module dftbp_dftbplus_main
   use dftbp_dftb_sparse2dense, only : packRhoRealBlacs, packRhoCplxBlacs, packRhoPauliBlacs,&
       & packRhoHelicalRealBlacs, packRhoHelicalCplxBlacs, packERhoPauliBlacs, unpackHSRealBlacs,&
       & unpackHSCplxBlacs, unpackHPauliBlacs, unpackSPauliBlacs, unpackHSHelicalRealBlacs,&
-      & unpackHSHelicalCplxBlacs, tiTDM, tiTraDip
+      & unpackHSHelicalCplxBlacs
   use dftbp_dftbplus_eigenvects, only : diagDenseMtxBlacs
   use dftbp_extlibs_mpifx, only : MPI_SUM, MPI_MAX, mpifx_allreduceip, mpifx_bcast
   use dftbp_extlibs_scalapackfx, only : pblasfx_phemm, pblasfx_psymm, pblasfx_ptran,&
@@ -1582,7 +1582,8 @@ contains
               & this%coord0, this%iAtInCentralRegion, this%gfilling, this%mfilling, env)
       !> Write out the TDM, because TDM not avialable in time for writeDetailedOut7 dipole writeout
       write(stdOut,*)
-      write(stdOut,'(A, 3F14.8, A)') 'TI-DFTB Transition Dipole Moment:', this%transitionDipoleMoment, ' a.u.'
+      write(stdOut,'(A, 3F14.8, A)') 'TI-DFTB Transition Dipole Moment:',&
+          & this%transitionDipoleMoment, ' a.u.'
     end if
 
     if (allocated(this%scc)) then
@@ -3145,8 +3146,8 @@ contains
     call env%globalTimer%stopTimer(globalTimers%diagonalization)
 
     call getFillingsAndBandEnergies(eigen, nEl, nSpin, tempElec, kWeight, tSpinSharedEf,&
-        & tFillKSep, tFixEf, iDistribFn, Ef, filling, energy%Eband, energy%TS, energy%E0, deltaDftb,&
-        & gfilling, mfilling)
+        & tFillKSep, tFixEf, iDistribFn, Ef, filling, energy%Eband, energy%TS, energy%E0,&
+        & deltaDftb, gfilling, mfilling)
 
     call env%globalTimer%startTimer(globalTimers%densityMatrix)
     if (nSpin /= 4) then
