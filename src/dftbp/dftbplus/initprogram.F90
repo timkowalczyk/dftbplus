@@ -2803,6 +2803,11 @@ contains
         call getDenseDescBlacs(env, blacsOpts%blockSize, blacsOpts%blockSize, this%denseDesc,&
             & this%isSparseReorderRequired)
       end associate
+      call scalafx_getlocalshape(env%blacs%orbitalGrid, this%denseDesc%blacsOrbSqr, nLocalRows,&
+          & nLocalCols)
+  #:else
+    nLocalRows = this%denseDesc%fullSize
+    nLocalCols = this%denseDesc%fullSize
   #:endif
 
     call densityMatrixSource(this%densityMatrix, this%electronicSolver, input%ctrl%isDmOnGpu)
